@@ -1,0 +1,21 @@
+{
+  "name": "babel-plugin-pure-toplevel",
+  "version": "0.1.0",
+  "description": "Babel plugin to mark top-level function calls as pure",
+  "main": "index.js",
+  "scripts": {
+    "build": "cargo build --release",
+    "test": "cargo test"
+  },
+  "keywords": [
+    "babel-plugin",
+    "pure",
+    "optimization",
+    "rust"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "@babel/core": "^7.0.0"
+  }
+}

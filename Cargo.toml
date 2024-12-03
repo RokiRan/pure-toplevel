@@ -1,0 +1,25 @@
+[package]
+name = "pure-toplevel"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2.12.2", default-features = false, features = ["napi4"] }
+napi-derive = "2.12.2"
+swc_core = { version = "0.79.71", features = [
+    "ecma_ast",
+    "ecma_visit",
+    "ecma_utils",
+    "common",
+    "__parser",
+    "ecma_parser",
+    "ecma_codegen"
+] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[build-dependencies]
+napi-build = "2.0.1"
