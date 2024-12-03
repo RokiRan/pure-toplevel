@@ -1,1 +1,6 @@
 /target
+node_modules
+pure-toplevel.node
+pnpm-lock.yaml
+yar-lock.json
+npm-lock.yaml

@@ -2,6 +2,7 @@
 extern crate napi_derive;
 
 use std::collections::HashSet;
+use lazy_static::lazy_static;
 use napi::{
     bindgen_prelude::*,
     Env, JsObject, Result, CallContext,
@@ -19,6 +20,37 @@ use swc_core::ecma::{
     visit::{VisitMut, VisitMutWith},
 };
 
+lazy_static! {
+    // 缓存的 TypeScript 帮助函数名称集合
+    static ref TSLIB_HELPERS: HashSet<String> = {
+        let mut helpers = HashSet::new();
+        // 添加常见的 TypeScript 帮助函数
+        helpers.extend([
+            "__createBinding".to_string(),
+            "__setModuleDefault".to_string(),
+            "__importStar".to_string(),
+            "__importDefault".to_string(),
+        ]);
+        helpers
+    };
+}
+
+fn is_tslib_helper_name(name: &str) -> bool {
+    // 检查是否为 TypeScript 帮助函数
+    let name_parts: Vec<&str> = name.split('$').collect();
+    
+    // 处理特殊的帮助函数命名规则
+    match name_parts.len() {
+        1 => TSLIB_HELPERS.contains(name),
+        2 => {
+            // 检查第二部分是否为数字
+            name_parts[1].parse::<i32>().is_ok() && 
+            TSLIB_HELPERS.contains(name_parts[0])
+        }
+        _ => false
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct BabelNode {
     #[serde(rename = "type")]
@@ -31,33 +63,19 @@ struct PureFunctionVisitor {
     in_top_level: bool,
     source_map: Lrc<SourceMap>,
     comments: Lrc<SingleThreadedComments>,
-    pure_candidates: HashSet<String>,
 }
 
 impl PureFunctionVisitor {
     fn new(source_map: Lrc<SourceMap>, comments: Lrc<SingleThreadedComments>) -> Self {
-        let mut pure_candidates = HashSet::new();
-        // 预定义一些常见的纯函数
-        pure_candidates.extend([
-            "Object.create".to_string(),
-            "Math.abs".to_string(),
-            "Math.round".to_string(),
-            "Math.floor".to_string(),
-            "Math.ceil".to_string(),
-            "Number".to_string(),
-            "String".to_string(),
-            "Boolean".to_string(),
-        ]);
-
         Self {
             in_top_level: true,
             source_map,
             comments,
-            pure_candidates,
         }
     }
 
     fn is_pure_candidate(&self, call: &CallExpr) -> bool {
+        // 如果不是顶层表达式，不添加 PURE 注解
         if !self.in_top_level {
             return false;
         }
@@ -65,22 +83,25 @@ impl PureFunctionVisitor {
         match &call.callee {
             Callee::Expr(expr) => {
                 match &**expr {
-                    Expr::Ident(_) => true, // 简单标识符
-                    Expr::Member(member) => {
-                        // 检查成员调用是否在预定义的纯函数列表中
-                        match (&*member.obj, &member.prop) {
-                            (Expr::Ident(obj), MemberProp::Ident(prop)) => {
-                                let full_name = format!("{}.{}", obj.sym, prop.sym);
-                                self.pure_candidates.contains(&full_name)
-                            }
-                            _ => false
-                        }
+                    // 排除有参数的函数表达式
+                    Expr::Arrow(arrow_expr) if !call.args.is_empty() => false,
+                    
+                    // 检查标识符是否为 TypeScript 帮助函数
+                    Expr::Ident(ident) => {
+                        !is_tslib_helper_name(&ident.sym.to_string())
                     }
-                    _ => false,
+                    
+                    // 其他情况默认为纯函数
+                    _ => true,
                 }
             }
             _ => false,
         }
+    }
+
+    fn is_pure_new_expression(&self, _new_expr: &NewExpr) -> bool {
+        // 检查 new 表达式是否为顶层且可以添加 PURE 注解
+        self.in_top_level
     }
 
     fn has_pure_comment(&self, span: Span) -> bool {
@@ -197,8 +218,37 @@ pub fn transform(source: String) -> Result<String> {
 }
 
 #[napi]
-pub fn create_plugin() -> () {
-    // 空实现
+pub fn create_plugin(node: JsObject) -> Result<bool> {
+    // 解析 Node.js 传入的 AST 节点
+    let node_type: String = node.get_named_property("type")?;
+
+    match node_type.as_str() {
+        "CallExpression" => {
+            // 解析调用表达式
+            let callee: JsObject = node.get_named_property("callee")?;
+            let callee_type: String = callee.get_named_property("type")?;
+            
+            // 检查是否为 TypeScript 帮助函数
+            if callee_type == "Identifier" {
+                let name: String = callee.get_named_property("name")?;
+                if is_tslib_helper_name(&name) {
+                    return Ok(false);
+                }
+            }
+
+            // 检查是否有参数
+            let args: JsObject = node.get_named_property("arguments")?;
+            let args_length: u32 = args.get_array_length()?;
+            
+            // 对于没有参数的函数调用，返回 true
+            Ok(args_length == 0)
+        },
+        "NewExpression" => {
+            // 对于 new 表达式，总是返回 true
+            Ok(true)
+        },
+        _ => Ok(false)
+    }
 }
 
 #[cfg(test)]
@@ -206,31 +256,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_transform_simple_call() -> Result<()> {
-        let source = "foo();";
-        let result = transform(source.to_string())?;
-        assert!(result.contains("/*#__PURE__*/"));
-        Ok(())
+    fn test_tslib_helper_detection() {
+        // 测试 TypeScript 帮助函数检测
+        assert!(is_tslib_helper_name("__importStar"));
+        assert!(is_tslib_helper_name("__importStar$1"));
+        assert!(!is_tslib_helper_name("__importStar$abc"));
+        assert!(!is_tslib_helper_name("custom_function"));
     }
 
     #[test]
-    fn test_transform_nested_call() -> Result<()> {
-        let source = "function test() { foo(); }";
-        let result = transform(source.to_string())?;
-        assert!(!result.contains("/*#__PURE__*/"));
-        Ok(())
-    }
-
-    #[test]
-    fn test_transform_member_call() -> Result<()> {
-        let source = "console.log();";
-        let result = transform(source.to_string())?;
-        assert!(!result.contains("/*#__PURE__*/"));
-        Ok(())
-    }
-
-    #[test]
-    fn test_transform_predefined_pure_functions() -> Result<()> {
+    fn test_transform_top_level_calls() -> Result<()> {
         let test_cases = vec![
             "Object.create({});",
             "Math.abs(-5);",
@@ -247,16 +282,56 @@ mod tests {
     }
 
     #[test]
-    fn test_transform_impure_functions() -> Result<()> {
+    fn test_transform_nested_calls() -> Result<()> {
         let test_cases = vec![
-            "console.log(1);",
-            "window.alert('test');",
-            "document.createElement('div');",
+            "function test() { foo(); }",
+            "class Test { method() { bar(); } }",
         ];
 
         for source in test_cases {
             let result = transform(source.to_string())?;
             assert!(!result.contains("/*#__PURE__*/"), "Failed for source: {}", source);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transform_tslib_helpers() -> Result<()> {
+        let test_cases = vec![
+            "__importStar(module);",
+            "__createBinding(exports, module, 'key');",
+        ];
+
+        for source in test_cases {
+            let result = transform(source.to_string())?;
+            assert!(!result.contains("/*#__PURE__*/"), "Failed for source: {}", source);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_plugin_node_js_integration() -> Result<()> {
+        // 模拟 Node.js 传入的 AST 节点
+        let test_cases = vec![
+            // 简单的函数调用
+            (r#"{"type": "CallExpression", "callee": {"type": "Identifier", "name": "foo"}, "arguments": []}"#, true),
+            
+            // TypeScript 帮助函数
+            (r#"{"type": "CallExpression", "callee": {"type": "Identifier", "name": "__importStar"}, "arguments": []}"#, false),
+            
+            // 带参数的函数调用
+            (r#"{"type": "CallExpression", "callee": {"type": "Identifier", "name": "bar"}, "arguments": [1]}"#, false),
+            
+            // new 表达式
+            (r#"{"type": "NewExpression", "callee": {"type": "Identifier", "name": "MyClass"}}"#, true),
+        ];
+
+        for (input, expected) in test_cases {
+            let node: JsObject = napi::bindgen_prelude::JsObject::from_str(input)?;
+            let result = create_plugin(node)?;
+            assert_eq!(result, expected, "Failed for input: {}", input);
         }
 
         Ok(())

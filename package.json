@@ -3,9 +3,16 @@
   "version": "0.1.0",
   "description": "Babel plugin to mark top-level function calls as pure",
   "main": "index.js",
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0",
+    "pnpm": ">=8.0.0"
+  },
   "scripts": {
-    "build": "cargo build --release",
-    "test": "cargo test"
+    "build": "napi build --release",
+    "build:debug": "napi build",
+    "test": "cargo test",
+    "test:babel": "babel-test"
   },
   "keywords": [
     "babel-plugin",
@@ -15,7 +22,22 @@
   ],
   "author": "",
   "license": "MIT",
+  "devDependencies": {
+    "@babel/core": "^7.22.0",
+    "@napi-rs/cli": "^2.16.3"
+  },
   "peerDependencies": {
     "@babel/core": "^7.0.0"
+  },
+  "napi": {
+    "name": "pure-toplevel",
+    "triples": {
+      "defaults": true,
+      "additional": [
+        "x86_64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "x86_64-pc-windows-msvc"
+      ]
+    }
   }
 }
